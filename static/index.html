@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Weather (WS-2000)</title>
+  <style>
+    :root { color-scheme: dark; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin:0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background:#0f1115;
+      color:#e7eaf0;
+      -webkit-text-size-adjust: 100%;
+    }
+    /* iPad landscape-focused: use full width (no mobile layout rules). */
+    .wrap { max-width: none; margin: 0 auto; padding: 16px 18px; }
+
+    /* Centered pairs (no fixed column widths). */
+    .pair { text-align: center; }
+    .pair .block { display: inline-block; vertical-align: top; margin: 0 18px; }
+    .label { font-size: 14px; opacity: .8; text-transform: uppercase; letter-spacing: .02em; }
+
+    /* Top row (Outdoors left, Indoor right) */
+    .topRow:before, .topRow:after { content: " "; display: table; }
+    .topRow:after { clear: both; }
+    .topRow .card { float: left; width: 49%; margin: 0 0 14px 0; }
+    .topRow .card.even { float: right; }
+
+    /* Split panels (float halves) for old iPad Safari */
+    .split:before, .split:after { content: " "; display: table; }
+    .split:after { clear: both; }
+    .half {
+      float: left;
+      width: 50%;
+      text-align: center;
+      padding: 6px 8px;
+    }
+    .half.right { float: right; }
+    .half.left { border-right: 1px solid #252b36; }
+
+    /* Avoid CSS Grid for very old iPad Safari; use float columns (more reliable than inline-block). */
+    .grid:before, .grid:after { content: " "; display: table; }
+    .grid:after { clear: both; }
+    .grid .card {
+      float: left;
+      width: 49%;
+      margin: 0 0 14px 0;
+    }
+    .grid .card.even { float: right; }
+
+    /* Left-side details block under Outdoors */
+    .belowOut:before, .belowOut:after { content: " "; display: table; }
+    .belowOut:after { clear: both; }
+    .belowOut .card { float: left; width: 49%; margin: 0 0 14px 0; }
+    .belowOut .card.even { float: right; }
+
+    /* Details panel typography */
+    .belowOut { font-size: 20px; line-height: 1.25; }
+    .belowOut .title { font-size: 24px; text-align: center; }
+
+    /* Forecast panel */
+    .forecastWrap { font-size: 18px; line-height: 1.2; }
+    .fcMeta { font-size: 14px; opacity: .75; margin-top: 6px; text-align: center; }
+    .fcRow { padding: 8px 0; border-top: 1px solid #252b36; }
+    .fcRow:first-child { border-top: none; }
+    .fcTime { display: inline-block; width: 72px; font-weight: 750; }
+    .fcTemp { display: inline-block; width: 94px; font-weight: 750; }
+    .fcDesc { opacity: .9; }
+    .fcPop { float: right; opacity: .8; }
+
+    .section { padding-top: 12px; margin-top: 12px; border-top: 1px solid #252b36; }
+    .section.first { padding-top: 0; margin-top: 0; border-top: none; }
+    .line:before, .line:after { content: " "; display: table; }
+    .line:after { clear: both; }
+    .lineLeft { float: left; }
+    .lineRight { float: right; }
+    .kLabel {
+      display: inline-block;
+      width: 110px;
+      font-size: inherit;
+      font-weight: 700;
+      opacity: .8;
+      text-transform: uppercase;
+      letter-spacing: .02em;
+      vertical-align: baseline;
+    }
+    .bigLine { font-size: inherit; font-weight: 750; line-height: 1.08; }
+    .bigLine .smallUnit { font-size: inherit; font-weight: 650; opacity: .9; margin-left: 6px; }
+    .bigLine .sub { font-size: inherit; font-weight: 700; opacity: .85; margin-left: 14px; }
+    .dir { font-size: inherit; font-weight: 750; opacity: .85; line-height: 1.08; margin-top: 0; }
+    .trend { font-size: inherit; font-weight: 750; opacity: .85; }
+    .kvBig { font-size: inherit; font-weight: 650; }
+
+    .card {
+      background:#161a22;
+      border:1px solid #252b36;
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.25);
+    }
+    .title { font-size: 14px; opacity:.8; letter-spacing:.02em; text-transform: uppercase; margin-bottom: 10px; }
+    .clockCard {
+      padding: 14px 18px;
+      background: #171c26;
+      border-color: #2b3444;
+    }
+    .now { text-align: center; }
+    .nowLine {
+      font-size: 44px;
+      font-weight: 750;
+      line-height: 1.08;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .big { font-size: 64px; font-weight: 700; line-height: 1; }
+    .big.bigOut { font-size: 84px; }
+    .unit { font-size: 22px; opacity:.9; margin-left: 6px; }
+    .row { white-space: nowrap; }
+    .row > * { display: inline-block; vertical-align: baseline; }
+    .kv { font-size: 22px; }
+    .muted { opacity:.75; }
+    .footer {
+      margin-top: 14px;
+      font-size: 14px;
+      opacity:.75;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Make the outdoors temp/trend/feels line larger */
+    .outFooter { font-size: 20px; opacity: .9; }
+
+    /* Multi-screen layout */
+    .screenContainer { display: none; }
+    .screenContainer.active { display: block; }
+    .navBar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 50px;
+      background: #161a22;
+      border-top: 1px solid #252b36;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      padding: 8px;
+      z-index: 1000;
+    }
+    .navBar button {
+      flex: 1;
+      max-width: 200px;
+      padding: 10px 20px;
+      font-size: 16px;
+      font-weight: 700;
+      background: #252b36;
+      color: #e7eaf0;
+      border: 1px solid #3d444f;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .navBar button:hover { background: #3d444f; }
+    .navBar button.active { background: #0f8dff; border-color: #0f8dff; }
+
+    /* Reserve space at bottom for nav */
+    body { margin-bottom: 60px; }
+    .wrap { margin-bottom: 0; }
+
+    /* Camera viewer (iframe) */
+    .cameraViewer { width: 100%; height: 100%; border: none; }
+
+    /* Static sizing (kiosk iPad landscape) */
+  </style>
+</head>
+<body>
+  <div class="screenContainer active" id="weatherScreen">
+    <div class="wrap">
+      <div class="card clockCard" style="margin-bottom:14px">
+        <div class="now">
+          <div class="nowLine" id="nowLine">--</div>
+        </div>
+      </div>
+
+    <div class="topRow">
+      <div class="card">
+        <div class="title">Outdoors</div>
+        <div class="split">
+          <div class="half left">
+            <div class="label">Temperature</div>
+            <div class="row">
+              <div class="big bigOut" id="tempOut">--</div>
+              <div class="unit">°F</div>
+            </div>
+          </div>
+          <div class="half right">
+            <div class="label">Humidity</div>
+            <div class="row">
+              <div class="big bigOut" id="humOut">--</div>
+              <div class="unit">%</div>
+            </div>
+          </div>
+        </div>
+        <div class="footer outFooter">
+          Temperature: <span id="tempTrend" class="muted">--</span>
+          <span class="muted">•</span> Feels like <span id="feelsOut" class="muted">--</span>
+        </div>
+      </div>
+
+      <div class="card even">
+        <div class="title">Indoor</div>
+        <div class="split">
+          <div class="half left">
+            <div class="label">Temperature</div>
+            <div class="row">
+              <div class="big" id="tempIn">--</div>
+              <div class="unit">°F</div>
+            </div>
+          </div>
+          <div class="half right">
+            <div class="label">Humidity</div>
+            <div class="row">
+              <div class="big" id="humIn">--</div>
+              <div class="unit">%</div>
+            </div>
+          </div>
+        </div>
+        <div class="footer">
+          Updated: <span id="ts2" class="muted">--</span>
+        </div>
+      </div>
+    </div>
+    <div class="belowOut">
+      <div class="card">
+        <div class="title">Outdoor Details</div>
+
+        <div class="section first">
+          <div class="line">
+            <div class="lineLeft">
+              <span class="kLabel">Wind</span>
+              <span class="bigLine"><span id="wind2">--</span><span class="smallUnit">mph</span><span class="sub">Gust <span id="gust2">--</span></span></span>
+            </div>
+            <div class="lineRight dir" id="windDir2">--</div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="line">
+            <div class="lineLeft">
+              <span class="kLabel">Pressure</span>
+              <span class="bigLine"><span id="baro2">--</span><span class="smallUnit">inHg</span><span class="sub">• <span id="baroTrend2">--</span></span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="line">
+            <div class="lineLeft">
+              <span class="kLabel">Rain</span>
+              <span class="bigLine">Rate <span id="rainrate2">--</span><span class="smallUnit">in/hr</span><span class="sub"><span id="rainday2">--</span> in/day</span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="kvBig">SUN &nbsp;&nbsp; UV <span id="uv2">--</span> &nbsp;&nbsp;•&nbsp;&nbsp; Solar <span id="solar2">--</span> W/m²</div>
+        </div>
+
+        <div class="section">
+          <div class="kvBig">
+            <div>Sun: <span id="sunrise">--</span> / <span id="sunset">--</span></div>
+            <div>Moon: <span id="moonrise">--</span> / <span id="moonset">--</span> &nbsp;•&nbsp; <span id="moonphase">--</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card even">
+        <div class="title">5-Day Forecast</div>
+        <div class="forecastWrap" id="fcList">--</div>
+        <div class="fcMeta" id="fcMeta">--</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Navigation Bar -->
+  <div class="navBar">
+    <button class="navBtn active" data-screen="weatherScreen" onclick="navClick(this)">Weather</button>
+    <button class="navBtn" data-screen="camerasScreen" onclick="navClick(this)">Cameras</button>
+    <button class="navBtn" data-screen="monitorScreen" onclick="navClick(this)">Monitor</button>
+  </div>
+
+<script>
+function navClick(btn) {
+  // Get the screen ID from the button's data attribute
+  var screenId = btn.getAttribute('data-screen');
+  
+  // Update button active state
+  var buttons = document.querySelectorAll('.navBtn');
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].classList.remove('active');
+  }
+  btn.classList.add('active');
+  
+  // Navigate to appropriate page
+  if (screenId === 'weatherScreen') {
+    window.location.href = '/';
+  } else if (screenId === 'camerasScreen') {
+    window.location.href = '/cameras';
+  } else if (screenId === 'monitorScreen') {
+    window.location.href = '/';
+  }
+}
+
+// Set weather button as active on page load
+window.addEventListener('DOMContentLoaded', function() {
+  var weatherBtn = document.querySelector('[data-screen="weatherScreen"]');
+  if (weatherBtn) {
+    weatherBtn.classList.add('active');
+  }
+});
+
+function toNum(x) {
+  var n = parseFloat(x);
+  return isNaN(n) ? null : n;
+}
+function fmt(n, digits) {
+  if (n === null) return "--";
+  return n.toFixed(digits);
+}
+function pick(obj, key) {
+  var v = obj && obj[key];
+  return (v === undefined || v === null || v === "") ? null : v;
+}
+
+function pickAny(obj, keys) {
+  var i;
+  for (i = 0; i < keys.length; i++) {
+    var v = pick(obj, keys[i]);
+    if (v !== null) return v;
+  }
+  return null;
+}
+function textOrDash(v) {
+  return (v === undefined || v === null || v === "") ? "--" : String(v);
+}
+function degToCompass(deg) {
+  var d = toNum(deg);
+  if (d === null) return "--";
+  var dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  var idx = Math.round(((d % 360) / 22.5)) % 16;
+  return dirs[idx];
+}
+
+function setText(id, value) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function setHTML(id, html) {
+  var el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function clamp(n, lo, hi) {
+  return (n < lo) ? lo : ((n > hi) ? hi : n);
+}
+
+function setTempColor(id, tF, minF, maxF) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  if (tF === null || tF === undefined) {
+    el.style.color = "";
+    return;
+  }
+
+  var t = clamp(tF, minF, maxF);
+  var frac = (maxF === minF) ? 0 : ((t - minF) / (maxF - minF));
+
+  // Hue 210 (blue/cold) -> 0 (red/hot)
+  var hue = Math.round(210 - (frac * 210));
+  el.style.color = "hsl(" + hue + ", 85%, 62%)";
+}
+
+function fmtClock(d) {
+  if (!d) return "--";
+  var h = d.getHours();
+  var m = d.getMinutes();
+  var ampm = (h >= 12) ? "PM" : "AM";
+  h = h % 12;
+  if (h === 0) h = 12;
+  return String(h) + ":" + pad2(m) + " " + ampm;
+}
+
+function renderForecast(days) {
+  if (!days || !days.length) {
+    setText("fcList", "Forecast unavailable");
+    return;
+  }
+  var n = Math.min(5, days.length);
+  var html = "";
+  var i;
+  for (i = 0; i < n; i++) {
+    var d = days[i] || {};
+    var label = (d.label !== undefined && d.label !== null) ? String(d.label) : "--";
+    var hi = (d.hi !== undefined && d.hi !== null) ? String(d.hi) : "--";
+    var lo = (d.lo !== undefined && d.lo !== null) ? String(d.lo) : "--";
+    var cond = (d.cond !== undefined && d.cond !== null) ? String(d.cond) : "--";
+
+    var hilo = hi + "°/" + lo + "°";
+
+    html += '<div class="fcRow">'
+      + '<span class="fcTime">' + escHtml(label) + '</span>'
+      + '<span class="fcTemp">' + escHtml(hilo) + '</span>'
+      + '<span class="fcDesc">' + escHtml(cond) + '</span>'
+      + '</div>';
+  }
+  setHTML("fcList", html);
+}
+
+function heatIndexF(tF, rh) {
+  // NOAA heat index (Steadman) regression; valid for warm/humid conditions.
+  var T = tF;
+  var R = rh;
+  var HI = -42.379 + (2.04901523 * T) + (10.14333127 * R)
+    - (0.22475541 * T * R) - (0.00683783 * T * T)
+    - (0.05481717 * R * R) + (0.00122874 * T * T * R)
+    + (0.00085282 * T * R * R) - (0.00000199 * T * T * R * R);
+
+  // Optional adjustments (NOAA guidance)
+  if (R < 13 && T >= 80 && T <= 112) {
+    HI -= ((13 - R) / 4) * Math.sqrt((17 - Math.abs(T - 95)) / 17);
+  } else if (R > 85 && T >= 80 && T <= 87) {
+    HI += ((R - 85) / 10) * ((87 - T) / 5);
+  }
+  return HI;
+}
+
+function windChillF(tF, vMph) {
+  // NWS wind chill index (valid for <= 50F and wind >= 3 mph)
+  var T = tF;
+  var V = vMph;
+  return 35.74 + 0.6215 * T - 35.75 * Math.pow(V, 0.16) + 0.4275 * T * Math.pow(V, 0.16);
+}
+
+function dewPointC(tC, rh) {
+  // Magnus formula (good general-purpose approximation)
+  var R = clamp(rh, 1, 100);
+  var a = 17.62;
+  var b = 243.12;
+  var gamma = (Math.log(R / 100) + (a * tC) / (b + tC));
+  return (b * gamma) / (a - gamma);
+}
+
+function apparentTempF(tF, rh, vMph) {
+  // Steadman apparent temperature (used by BOM/Australia style), works across more conditions.
+  // AT(°C) = T + 0.33*e - 0.70*ws - 4.00, where e is vapor pressure (hPa), ws is wind speed (m/s)
+  if (tF === null || rh === null || vMph === null) return null;
+  var tC = (tF - 32) * 5 / 9;
+  var dpC = dewPointC(tC, rh);
+  var e = 6.112 * Math.exp((17.67 * dpC) / (243.5 + dpC));
+  var ws = Math.max(0, vMph) * 0.44704;
+  var atC = tC + (0.33 * e) - (0.70 * ws) - 4.0;
+  return (atC * 9 / 5) + 32;
+}
+
+function feelsLikeF(tF, rh, vMph) {
+  if (tF === null) return null;
+  var R = (rh === null) ? null : clamp(rh, 0, 100);
+  var V = (vMph === null) ? null : Math.max(0, vMph);
+
+  // Use heat index for hot/humid, wind chill for cold/windy, else actual temp.
+  if (R !== null && tF >= 80) {
+    return heatIndexF(tF, R);
+  }
+  if (V !== null && tF <= 50 && V >= 3) {
+    return windChillF(tF, V);
+  }
+
+  // Otherwise, compute a general "apparent" temperature if we have RH+wind.
+  if (R !== null && V !== null) {
+    var at = apparentTempF(tF, R, V);
+    if (at !== null && Math.abs(at - tF) >= 0.5) return at;
+  }
+
+  return tF;
+}
+
+var baroHist = [];
+var BARO_WINDOW_MS = 3 * 60 * 60 * 1000;
+function baroTrend(cur) {
+  if (cur === null) return "--";
+  var now = new Date().getTime();
+  baroHist.push({ t: now, v: cur });
+  while (baroHist.length && (now - baroHist[0].t) > BARO_WINDOW_MS) {
+    baroHist.shift();
+  }
+  if (baroHist.length < 2) return "--";
+  var base = baroHist[0].v;
+  var delta = cur - base;
+
+  // Standard quick-read practice: compare against a multi-hour baseline.
+  // ~0.03 inHg in ~3 hours is a meaningful change.
+  if (delta >= 0.03) return "Rising";
+  if (delta <= -0.03) return "Falling";
+  return "Steady";
+}
+
+var tempHist = [];
+var TEMP_WINDOW_MS = 60 * 60 * 1000;
+function tempTrend(cur) {
+  if (cur === null) return "--";
+  var now = new Date().getTime();
+  tempHist.push({ t: now, v: cur });
+  while (tempHist.length && (now - tempHist[0].t) > TEMP_WINDOW_MS) {
+    tempHist.shift();
+  }
+  if (tempHist.length < 2) return "--";
+  var base = tempHist[0].v;
+  var delta = cur - base;
+
+  // 1°F over ~1 hour is a meaningful short-term change.
+  if (delta >= 1.0) return "Rising";
+  if (delta <= -1.0) return "Falling";
+  return "Steady";
+}
+
+function pad2(n) {
+  return (n < 10) ? ("0" + n) : String(n);
+}
+
+function updateClock() {
+  try {
+    var dt = new Date();
+    var h = dt.getHours();
+    var m = dt.getMinutes();
+    var ampm = (h >= 12) ? "PM" : "AM";
+    h = h % 12;
+    if (h === 0) h = 12;
+
+    var days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var dateStr = days[dt.getDay()] + ", " + months[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
+
+    var lineEl = document.getElementById("nowLine");
+    if (lineEl) lineEl.textContent = String(h) + ":" + pad2(m) + " " + ampm + "  " + dateStr;
+  } catch (e) {
+    // ignore
+  }
+}
+
+function update() {
+  try {
+    var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status !== 200) return;
+      var d;
+      try {
+        d = JSON.parse(xhr.responseText);
+      } catch (e) {
+        return;
+      }
+
+      // Outdoor
+      var tOut = toNum(pick(d, "tempf"));
+      var hOut = toNum(pick(d, "humidity"));
+      var wOut = toNum(pick(d, "windspeedmph"));
+      setText("tempOut", fmt(tOut, 1));
+      setText("humOut", textOrDash(pick(d, "humidity")));
+      setText("tempTrend", tempTrend(tOut));
+      var feels = feelsLikeF(tOut, hOut, wOut);
+      setText("feelsOut", fmt(feels, 1) + "°F");
+
+      // Temperature-based colors
+      setTempColor("tempOut", tOut, 10, 95);
+      setTempColor("feelsOut", feels, 10, 95);
+
+      // Indoor
+      var tIn = toNum(pick(d, "tempinf"));
+      setText("tempIn", fmt(tIn, 1));
+      setText("humIn", textOrDash(pick(d, "humidityin")));
+
+      // Indoor range tuned for a heated/cooled home
+      setTempColor("tempIn", tIn, 60, 80);
+
+      // Wind
+      var wind = fmt(toNum(pick(d, "windspeedmph")), 1);
+      var gust = fmt(toNum(pick(d, "windgustmph")), 1);
+      setText("wind", wind);
+      setText("gust", gust);
+      setText("wind2", wind);
+      setText("gust2", gust);
+
+      var wdeg = toNum(pick(d, "winddir"));
+      var wtxt = (wdeg === null) ? "--" : (degToCompass(wdeg) + " (" + String(Math.round(wdeg)) + "°)");
+      setText("windDir", wtxt);
+      setText("windDir2", wtxt);
+
+      // Rain
+      var rrate = fmt(toNum(pick(d, "rainratein")), 2);
+      var rday  = fmt(toNum(pick(d, "dailyrainin")), 3);
+      setText("rainrate", rrate);
+      setText("rainday", rday);
+      setText("rainrate2", rrate);
+      setText("rainday2", rday);
+
+      // Pressure
+      var baro = pick(d, "baromrelin");
+      if (baro === null) baro = pick(d, "baromabsin");
+      var b = toNum(baro);
+      var bFmt = fmt(b, 3);
+      var bTr = baroTrend(b);
+      setText("baro", bFmt);
+      setText("baroTrend", (bTr === "--") ? "" : ("(" + bTr + ")"));
+      setText("baro2", bFmt);
+      setText("baroTrend2", bTr);
+
+      // UV / Solar
+      var uv = textOrDash(pick(d, "uv"));
+      var sol = fmt(toNum(pick(d, "solarradiation")), 2);
+      setText("uv", uv);
+      setText("solar", sol);
+      setText("uv2", uv);
+      setText("solar2", sol);
+
+      // Sun / Moon times (if provided by upstream; otherwise show --)
+      setText("sunrise", textOrDash(pickAny(d, ["sunrise", "sunrise_local", "sunrise_time"])));
+      setText("sunset", textOrDash(pickAny(d, ["sunset", "sunset_local", "sunset_time"])));
+      setText("moonrise", textOrDash(pickAny(d, ["moonrise", "moonrise_local", "moonrise_time"])));
+      setText("moonset", textOrDash(pickAny(d, ["moonset", "moonset_local", "moonset_time"])));
+      setText("moonphase", textOrDash(pickAny(d, ["moon_phase", "moonphase"])));
+
+      // Forecast is provided by the Windows server via /data (same-origin).
+      // This keeps the iPad client "dumb" and avoids TLS/CORS issues.
+      var fcDays = d && d.forecast_5day ? d.forecast_5day : null;
+      var meta = document.getElementById("fcMeta");
+      var metaText = (d && d.forecast_meta) ? d.forecast_meta : ((d && d.forecast_error) ? d.forecast_error : "");
+      if (meta) meta.textContent = textOrDash(metaText);
+      renderForecast(fcDays);
+
+      var ts = textOrDash(pick(d, "timestamp"));
+      setText("ts2", ts);
+    };
+
+    xhr.open("GET", "/data?_=" + new Date().getTime(), true);
+    xhr.send(null);
+  } catch (e) {
+    // leave previous values
+  }
+}
+update();
+setInterval(update, 5000);
+updateClock();
+setInterval(updateClock, 1000);
+</script>
+</body>
+</html>
