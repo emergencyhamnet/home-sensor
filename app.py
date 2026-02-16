@@ -39,6 +39,15 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 LATEST_PATH = os.path.join(DATA_DIR, "latest.json")
+LATEST_NODES_DIR = os.path.join(DATA_DIR, "latest")
+EVENTS_DIR = os.path.join(DATA_DIR, "events")
+LEAK_LOG_PATH = os.path.join(EVENTS_DIR, "leak.log")
+os.makedirs(LATEST_NODES_DIR, exist_ok=True)
+os.makedirs(EVENTS_DIR, exist_ok=True)
+
+CO2_WARN_PPM = 1200
+LOW_BATT_PCT = 20
+NODE_OFFLINE_MINUTES = 10
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -224,7 +233,7 @@ function navClickHandler(btn) {
     } else if (screenId === 'camerasScreen') {
         window.location.href = 'http://192.168.1.233:8080/cameras';
     } else if (screenId === 'monitorScreen') {
-        window.location.href = 'http://192.168.1.233:8080/';
+        window.location.href = 'http://192.168.1.233:8080/monitor';
     }
 }
 
@@ -720,6 +729,227 @@ def _load_latest():
             return {"timestamp": None}
     return {"timestamp": None}
 
+
+def _to_num(v):
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+
+def _sanitize_node_id(raw):
+    node_id = str(raw or "").strip()
+    if not node_id:
+        return None
+    node_id = re.sub(r"[^A-Za-z0-9_-]", "_", node_id)
+    return node_id[:64] if node_id else None
+
+
+def _atomic_write_json(path: str, payload: dict):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _append_jsonl(path: str, payload: dict):
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _epoch_now():
+    return int(time.time())
+
+
+def _to_epoch(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        s = str(value).strip()
+        if not s:
+            return None
+        if s.isdigit():
+            return int(s)
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+def _load_latest_nodes_and_base():
+    nodes = []
+    base = None
+    try:
+        names = sorted(os.listdir(LATEST_NODES_DIR))
+    except Exception:
+        names = []
+
+    for name in names:
+        if not name.lower().endswith(".json"):
+            continue
+        path = os.path.join(LATEST_NODES_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                item = json.load(f)
+        except Exception:
+            continue
+
+        if name.lower() == "base.json":
+            base = item
+        else:
+            nodes.append(item)
+
+    return nodes, base
+
+
+def _build_monitor_state():
+    now_epoch = _epoch_now()
+    offline_seconds = NODE_OFFLINE_MINUTES * 60
+    alerts = []
+    sensors = []
+
+    nodes, base = _load_latest_nodes_and_base()
+
+    for rec in nodes:
+        payload = rec.get("payload") if isinstance(rec, dict) else None
+        if not isinstance(payload, dict):
+            continue
+
+        node_id = str(payload.get("id") or rec.get("node_id") or "unknown")
+        batt_pct = _to_num(payload.get("batt_pct"))
+        vbatt = _to_num(payload.get("vbatt"))
+        t_c = _to_num(payload.get("t_c"))
+        rh = _to_num(payload.get("rh"))
+        leak = int(_to_num(payload.get("leak")) or 0)
+        wet = _to_num(payload.get("wet"))
+        rssi = _to_num(rec.get("rssi"))
+        snr = _to_num(rec.get("snr"))
+        rx_ts = _to_epoch(rec.get("rx_ts"))
+        if rx_ts is None:
+            rx_ts = _to_epoch(rec.get("received_at"))
+
+        offline = bool(rx_ts is None or (now_epoch - rx_ts) > offline_seconds)
+
+        battery_label = "--"
+        if batt_pct is not None and vbatt is not None:
+            battery_label = f"{int(round(batt_pct))}% ({vbatt:.2f}V)"
+        elif batt_pct is not None:
+            battery_label = f"{int(round(batt_pct))}%"
+        elif vbatt is not None:
+            battery_label = f"{vbatt:.2f}V"
+
+        item = {
+            "sensor_id": node_id,
+            "name": node_id,
+            "temperature_c": t_c,
+            "temperature_f": (t_c * 9.0 / 5.0 + 32.0) if t_c is not None else None,
+            "humidity": rh,
+            "leak": leak,
+            "wet": wet,
+            "vbatt": vbatt,
+            "batt_pct": batt_pct,
+            "battery": battery_label,
+            "rssi": rssi,
+            "snr": snr,
+            "signal": rssi,
+            "seq": payload.get("seq"),
+            "last_rx_ts": rx_ts,
+            "offline": offline,
+        }
+        sensors.append(item)
+
+        if leak == 1:
+            alerts.append({"severity": "critical", "type": "leak", "node_id": node_id, "message": f"Leak detected at {node_id}"})
+        if batt_pct is not None and batt_pct < LOW_BATT_PCT:
+            alerts.append({"severity": "warning", "type": "battery", "node_id": node_id, "message": f"Low battery at {node_id}: {int(round(batt_pct))}%"})
+        if offline:
+            alerts.append({"severity": "warning", "type": "offline", "node_id": node_id, "message": f"Node offline: {node_id}"})
+
+    base_out = None
+    if isinstance(base, dict):
+        co2 = _to_num(base.get("co2_ppm"))
+        t_c = _to_num(base.get("t_c"))
+        rh = _to_num(base.get("rh"))
+        voc = _to_num(base.get("voc_index"))
+        rx_ts = _to_epoch(base.get("rx_ts"))
+        if rx_ts is None:
+            rx_ts = _to_epoch(base.get("received_at"))
+
+        base_out = {
+            "src": base.get("src") or "base",
+            "co2_ppm": co2,
+            "t_c": t_c,
+            "temperature_f": (t_c * 9.0 / 5.0 + 32.0) if t_c is not None else None,
+            "rh": rh,
+            "voc_index": voc,
+            "last_rx_ts": rx_ts,
+        }
+        if co2 is not None and co2 > CO2_WARN_PPM:
+            alerts.append({"severity": "warning", "type": "co2", "node_id": "base", "message": f"High CO₂ at base: {int(round(co2))} ppm"})
+
+    sensors.sort(key=lambda x: str(x.get("name") or ""))
+    return {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "sensor_count": len(sensors),
+        "sensors": sensors,
+        "base": base_out,
+        "alerts": alerts,
+        "thresholds": {
+            "co2_warn_ppm": CO2_WARN_PPM,
+            "battery_warn_pct": LOW_BATT_PCT,
+            "offline_minutes": NODE_OFFLINE_MINUTES,
+        },
+    }
+
+
+def _build_monitor_sensors(payload: dict):
+    sensors = {}
+
+    def _slot(sensor_id: int):
+        slot = sensors.get(sensor_id)
+        if slot is None:
+            slot = {
+                "sensor_id": sensor_id,
+                "name": f"Sensor {sensor_id}",
+                "temperature_f": None,
+                "humidity": None,
+                "battery": None,
+                "signal": None,
+            }
+            sensors[sensor_id] = slot
+        return slot
+
+    for key, raw in payload.items():
+        k = str(key).lower()
+
+        m = re.fullmatch(r"temp(\d+)f", k)
+        if m:
+            sensor_id = int(m.group(1))
+            _slot(sensor_id)["temperature_f"] = _to_num(raw)
+            continue
+
+        m = re.fullmatch(r"humidity(\d+)", k)
+        if m:
+            sensor_id = int(m.group(1))
+            _slot(sensor_id)["humidity"] = _to_num(raw)
+            continue
+
+        m = re.fullmatch(r"batt(\d+)", k)
+        if m:
+            sensor_id = int(m.group(1))
+            _slot(sensor_id)["battery"] = raw
+            continue
+
+        m = re.fullmatch(r"rssi(\d+)", k)
+        if m:
+            sensor_id = int(m.group(1))
+            _slot(sensor_id)["signal"] = _to_num(raw)
+            continue
+
+    return [sensors[sid] for sid in sorted(sensors.keys())]
+
 def _save_latest(payload: dict):
     tmp = LATEST_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -812,6 +1042,90 @@ def data():
 
     return jsonify(payload)
 
+
+@app.route("/api/lora", methods=["POST"])
+def api_lora():
+    packet = request.get_json(silent=True)
+    if not isinstance(packet, dict):
+        return jsonify({"ok": False, "error": "invalid json"}), 400
+
+    payload = packet.get("payload")
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "missing payload object"}), 400
+
+    node_id = _sanitize_node_id(payload.get("id"))
+    if not node_id:
+        return jsonify({"ok": False, "error": "missing payload.id"}), 400
+
+    rec = {
+        "gateway_id": packet.get("gateway_id") or "gw-main",
+        "node_id": node_id,
+        "rx_ts": _to_epoch(packet.get("rx_ts")) or _epoch_now(),
+        "rssi": _to_num(packet.get("rssi")),
+        "snr": _to_num(packet.get("snr")),
+        "payload": payload,
+        "received_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    path = os.path.join(LATEST_NODES_DIR, f"{node_id}.json")
+    _atomic_write_json(path, rec)
+
+    leak = int(_to_num(payload.get("leak")) or 0)
+    if leak == 1:
+        _append_jsonl(
+            LEAK_LOG_PATH,
+            {
+                "ts": rec["received_at"],
+                "node_id": node_id,
+                "gateway_id": rec["gateway_id"],
+                "seq": payload.get("seq"),
+                "wet": _to_num(payload.get("wet")),
+                "vbatt": _to_num(payload.get("vbatt")),
+                "batt_pct": _to_num(payload.get("batt_pct")),
+                "rssi": rec.get("rssi"),
+                "snr": rec.get("snr"),
+            },
+        )
+
+    return jsonify({"ok": True, "node_id": node_id})
+
+
+@app.route("/api/base", methods=["POST"])
+def api_base():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "invalid json"}), 400
+
+    rec = {
+        "src": body.get("src") or "base",
+        "rx_ts": _epoch_now(),
+        "co2_ppm": _to_num(body.get("co2_ppm")),
+        "t_c": _to_num(body.get("t_c")),
+        "rh": _to_num(body.get("rh")),
+        "voc_index": _to_num(body.get("voc_index")),
+        "wifi_rssi": _to_num(body.get("wifi_rssi")),
+        "uptime_s": _to_num(body.get("uptime_s")),
+        "received_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    _atomic_write_json(os.path.join(LATEST_NODES_DIR, "base.json"), rec)
+    return jsonify({"ok": True, "src": rec["src"]})
+
+
+@app.route("/monitor_data", methods=["GET"])
+def monitor_data():
+    state = _build_monitor_state()
+
+    if state.get("sensor_count", 0) == 0:
+        payload = _load_latest()
+        sensors = _build_monitor_sensors(payload)
+        if sensors:
+            state["timestamp"] = payload.get("timestamp")
+            state["sensor_count"] = len(sensors)
+            state["sensors"] = sensors
+
+    return jsonify(state)
+
 @app.route("/", methods=["GET"])
 def index():
     # If there's a Blue Iris session parameter, forward to the proxy
@@ -822,6 +1136,11 @@ def index():
         return redirect(target, code=302)
     # Otherwise serve the main dashboard
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/monitor", methods=["GET"])
+def monitor():
+    return send_from_directory(app.static_folder, "monitor.html")
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -899,7 +1218,7 @@ def cameras():
         <iframe id=\"cameraFrame\" src=\"{ui3_src}\" allow=\"autoplay; fullscreen\"></iframe>
         <div id=\"overlayButtons\">
             <button onclick="window.location.href='/'">Weather</button>
-            <button onclick="window.location.href='/'">Monitor</button>
+            <button onclick="window.location.href='/monitor'">Monitor</button>
             <button onclick=\"document.getElementById('cameraFrame').src = document.getElementById('cameraFrame').src;\">Refresh</button>
         </div>
     </body>

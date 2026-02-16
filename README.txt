@@ -13,13 +13,50 @@ URLs
 ----
 Dashboard:  http://<YOUR_WINDOWS_IP>:8080/
 JSON Data:  http://<YOUR_WINDOWS_IP>:8080/data
+Monitor:    http://<YOUR_WINDOWS_IP>:8080/monitor
+Monitor API:http://<YOUR_WINDOWS_IP>:8080/monitor_data
 Health:     http://<YOUR_WINDOWS_IP>:8080/health
+LoRa Ingest: http://<YOUR_WINDOWS_IP>:8080/api/lora
+Base Ingest: http://<YOUR_WINDOWS_IP>:8080/api/base
 
 /data includes:
   - Raw station fields (latest.json)
   - sunrise/sunset/moonrise/moonset
   - moon_phase (Waxing/Waning/etc)
   - forecast_5day (high/low + simple condition)
+
+/api/lora expects gateway packets like:
+  {
+    "gateway_id":"gw-main",
+    "rx_ts":1760000000,
+    "rssi":-92,
+    "snr":7.5,
+    "payload":{
+      "v":1,
+      "id":"laundry",
+      "seq":1042,
+      "t_c":21.6,
+      "rh":44.2,
+      "leak":1,
+      "wet":3120,
+      "vbatt":3.62,
+      "batt_pct":28
+    }
+  }
+
+/api/base expects gateway environmental readings like:
+  {
+    "src":"base",
+    "co2_ppm":865,
+    "t_c":22.3,
+    "rh":41.2,
+    "voc_index":143
+  }
+
+Server writes monitor files to:
+  data/latest/<nodeId>.json
+  data/latest/base.json
+  data/events/leak.log
 
 1) Install Python (one time)
 ----------------------------
