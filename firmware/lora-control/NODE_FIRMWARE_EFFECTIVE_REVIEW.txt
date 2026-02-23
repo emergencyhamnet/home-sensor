@@ -1,0 +1,138 @@
+WS-2000 LORA-CONTROL: Effective Firmware Review (Control + Monitor)
+
+Scope
+- This file documents the effective firmware behavior for the two deployed node environments:
+  1) control_wifi (control node)
+  2) monitor_lora_lp (monitor node)
+- Source of truth:
+  - platformio.ini env defines and source filter
+  - src/control_monitor_main.cpp compile-time branches
+
+====================================================================
+1) CONTROL NODE (env: control_wifi)
+====================================================================
+
+Build selection
+- Environment: [env:control_wifi]
+- Source compiled: src/control_monitor_main.cpp
+- Upload port: COM8
+
+Key defines from platformio.ini
+- NODE_ID="control-node"
+- CONTROL_WIFI_DIRECT=1
+- LOW_POWER_MODE not defined (defaults to 0)
+- SENSOR_TX_INTERVAL_MS=10000
+- WIFI_SSID="ukphotoguy"
+- WIFI_PASS="shrewsbury"
+- SERVER_BASE_URL="http://192.168.1.49:8080"
+
+Control node input/output config
+- LEAK_DIGITAL_PIN=23 (active LOW)
+- GARAGE_DOOR_PIN=-1 (disabled)
+- SIDE_DOOR_PIN=-1 (disabled)
+- MOTION_PIN=-1 (disabled)
+- LIGHT_SENSE_PIN=35
+- BUZZER_PIN=4 (active HIGH)
+- ALARM_SILENCE_PIN=15
+- OLED_ENABLED=1 (SSD1306 @ 0x3C, 128x64)
+- Local sensor rail: SENSOR_PWR_PIN=13
+
+Effective runtime behavior
+- setup()
+  - Initializes pins/sensors/OLED
+  - Runs disableUnusedRadios() in control mode (WiFi STA + BT off)
+  - Calls connectWifiIfNeeded()
+  - Does NOT initialize LoRa radio (LoRa TX path is bypassed)
+- loop() (CONTROL_WIFI_DIRECT branch)
+  - refreshDerivedReadings()
+  - pollServerAlarmState() from /monitor_data every ~5s
+  - Applies local alarm behavior + buzzer pattern when alarm active and not silenced
+  - Every SENSOR_TX_INTERVAL_MS:
+    - buildPayload()
+    - postControlPayloadToServer() -> POST /api/lora
+
+Network endpoints used by control node
+- POST /api/lora
+- GET /monitor_data
+
+Payload shape (control node)
+- Includes: id, seq, t_c, rh, optional co2_ppm, leak, wet, garage_open, side_open, motion, light_level, alarm_silenced, vbatt, batt_pct
+- With current defines, garage_open/side_open/motion are forced 0 (pins disabled)
+
+What is NOT active in control node build
+- LoRa TX path in loop() (non-control branch)
+- Deep sleep path (LOW_POWER_MODE=0)
+
+====================================================================
+2) MONITOR NODE (env: monitor_lora_lp)
+====================================================================
+
+Build selection
+- Environment: [env:monitor_lora_lp]
+- Source compiled: src/control_monitor_main.cpp
+- Upload port: COM9
+
+Key defines from platformio.ini
+- NODE_ID="monitor-node"
+- CONTROL_WIFI_DIRECT not defined (defaults to 0)
+- LOW_POWER_MODE=1
+- SENSOR_SLEEP_SECONDS=120
+
+Monitor node input/output config
+- LEAK_DIGITAL_PIN=23 (active LOW)
+- GARAGE_DOOR_PIN=32
+- SIDE_DOOR_PIN=33
+- MOTION_PIN=25
+- LIGHT_SENSE_PIN=35
+- BUZZER_PIN=-1 (disabled)
+- ALARM_SILENCE_PIN=-1 (disabled)
+- OLED_ENABLED=0
+- SCD41_LOCAL_ENABLED=1
+- SHT3X_LOCAL_ENABLED=1
+- SENSOR_PWR_PIN=13
+
+Effective runtime behavior
+- setup()
+  - Initializes pins and local sensors
+  - Forces WiFi/BT off via disableUnusedRadios() non-control branch
+  - Initializes LoRa via initLora()
+- loop() (LOW_POWER_MODE branch)
+  - refreshDerivedReadings()
+  - buildPayload()
+  - LoRa.beginPacket/print/endPacket
+  - LoRa.sleep()
+  - sensor rail off
+  - enterDeepSleep() for 120s
+
+Network usage by monitor node
+- None directly (no WiFi HTTP in monitor build)
+- Data reaches server through gateway bridge
+
+What is NOT active in monitor node build
+- WiFi direct code paths (connectWifiIfNeeded/postJsonToServer/pollServerAlarmState)
+- OLED display pages (OLED disabled)
+- Local buzzer output (buzzer pin disabled)
+
+====================================================================
+3) Shared code fact
+====================================================================
+- Both node envs compile the same source file:
+  src/control_monitor_main.cpp
+- Behavior diverges entirely via compile-time defines from platformio.ini.
+
+====================================================================
+4) Quick review checklist per node
+====================================================================
+For control node
+- Confirm [env:control_wifi] defines
+- Confirm CONTROL_WIFI_DIRECT=1
+- Confirm disabled monitor-only inputs (garage/side/motion = -1)
+- Confirm COM8 upload target
+
+For monitor node
+- Confirm [env:monitor_lora_lp] defines
+- Confirm LOW_POWER_MODE=1 and SENSOR_SLEEP_SECONDS=120
+- Confirm BUZZER_PIN=-1 and OLED_ENABLED=0
+- Confirm COM9 upload target
+
+End of review.
