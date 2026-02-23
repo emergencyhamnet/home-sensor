@@ -47,7 +47,12 @@ os.makedirs(EVENTS_DIR, exist_ok=True)
 
 CO2_WARN_PPM = 1200
 LOW_BATT_PCT = 20
+PMU_LOW_VBAT_V = 3.40
 NODE_OFFLINE_MINUTES = 10
+NODE_OFFLINE_MINUTES_BY_NODE = {
+    "control-node": 5,
+    "monitor-node": 185,
+}
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -229,11 +234,11 @@ function navClickHandler(btn) {
   
   // Navigate
     if (screenId === 'weatherScreen') {
-        window.location.href = 'http://192.168.1.233:8080/';
+        window.location.href = '/';
     } else if (screenId === 'camerasScreen') {
-        window.location.href = 'http://192.168.1.233:8080/cameras';
+        window.location.href = '/cameras';
     } else if (screenId === 'monitorScreen') {
-        window.location.href = 'http://192.168.1.233:8080/monitor';
+        window.location.href = '/monitor';
     }
 }
 
@@ -737,6 +742,20 @@ def _to_num(v):
         return None
 
 
+def _to_flag(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return int(v) != 0
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("1", "true", "yes", "on"):
+            return True
+        if s in ("0", "false", "no", "off", ""):
+            return False
+    return False
+
+
 def _sanitize_node_id(raw):
     node_id = str(raw or "").strip()
     if not node_id:
@@ -759,6 +778,39 @@ def _append_jsonl(path: str, payload: dict):
 
 def _epoch_now():
     return int(time.time())
+
+
+def _normalize_rx_ts(value):
+    ts = _to_epoch(value)
+    if ts is None:
+        return None
+    if ts < 946684800:
+        return None
+    return ts
+
+
+def _effective_event_ts(record: dict):
+    if not isinstance(record, dict):
+        return None
+    rx_ts = _normalize_rx_ts(record.get("rx_ts"))
+    received_ts = _to_epoch(record.get("received_at"))
+    file_ts = _to_epoch(record.get("_file_ts"))
+    candidates = [ts for ts in (rx_ts, received_ts, file_ts) if ts is not None]
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+def _node_offline_seconds(node_id):
+    key = str(node_id or "").strip().lower()
+    minutes = NODE_OFFLINE_MINUTES_BY_NODE.get(key, NODE_OFFLINE_MINUTES)
+    try:
+        minutes = float(minutes)
+    except Exception:
+        minutes = float(NODE_OFFLINE_MINUTES)
+    if minutes < 1:
+        minutes = 1
+    return int(minutes * 60)
 
 
 def _to_epoch(value):
@@ -796,6 +848,11 @@ def _load_latest_nodes_and_base():
         except Exception:
             continue
 
+        try:
+            item["_file_ts"] = int(os.path.getmtime(path))
+        except Exception:
+            pass
+
         if name.lower() == "base.json":
             base = item
         else:
@@ -806,7 +863,6 @@ def _load_latest_nodes_and_base():
 
 def _build_monitor_state():
     now_epoch = _epoch_now()
-    offline_seconds = NODE_OFFLINE_MINUTES * 60
     alerts = []
     sensors = []
 
@@ -822,14 +878,19 @@ def _build_monitor_state():
         vbatt = _to_num(payload.get("vbatt"))
         t_c = _to_num(payload.get("t_c"))
         rh = _to_num(payload.get("rh"))
+        co2_ppm = _to_num(payload.get("co2_ppm"))
         leak = int(_to_num(payload.get("leak")) or 0)
         wet = _to_num(payload.get("wet"))
+        garage_open = int(_to_num(payload.get("garage_open")) or 0)
+        side_open = int(_to_num(payload.get("side_open")) or 0)
+        motion = int(_to_num(payload.get("motion")) or 0)
+        alarm_silenced = _to_flag(payload.get("alarm_silenced"))
+        light_level = _to_num(payload.get("light_level"))
         rssi = _to_num(rec.get("rssi"))
         snr = _to_num(rec.get("snr"))
-        rx_ts = _to_epoch(rec.get("rx_ts"))
-        if rx_ts is None:
-            rx_ts = _to_epoch(rec.get("received_at"))
+        rx_ts = _effective_event_ts(rec)
 
+        offline_seconds = _node_offline_seconds(node_id)
         offline = bool(rx_ts is None or (now_epoch - rx_ts) > offline_seconds)
 
         battery_label = "--"
@@ -846,8 +907,14 @@ def _build_monitor_state():
             "temperature_c": t_c,
             "temperature_f": (t_c * 9.0 / 5.0 + 32.0) if t_c is not None else None,
             "humidity": rh,
+            "co2_ppm": co2_ppm,
             "leak": leak,
             "wet": wet,
+            "garage_open": garage_open,
+            "side_open": side_open,
+            "motion": motion,
+            "alarm_silenced": alarm_silenced,
+            "light_level": light_level,
             "vbatt": vbatt,
             "batt_pct": batt_pct,
             "battery": battery_label,
@@ -862,6 +929,12 @@ def _build_monitor_state():
 
         if leak == 1:
             alerts.append({"severity": "critical", "type": "leak", "node_id": node_id, "message": f"Leak detected at {node_id}"})
+        if garage_open == 1:
+            alerts.append({"severity": "warning", "type": "garage", "node_id": node_id, "message": f"Garage open at {node_id}"})
+        if side_open == 1:
+            alerts.append({"severity": "warning", "type": "side_door", "node_id": node_id, "message": f"Side door open at {node_id}"})
+        if motion == 1:
+            alerts.append({"severity": "warning", "type": "motion", "node_id": node_id, "message": f"Motion detected at {node_id}"})
         if batt_pct is not None and batt_pct < LOW_BATT_PCT:
             alerts.append({"severity": "warning", "type": "battery", "node_id": node_id, "message": f"Low battery at {node_id}: {int(round(batt_pct))}%"})
         if offline:
@@ -873,9 +946,19 @@ def _build_monitor_state():
         t_c = _to_num(base.get("t_c"))
         rh = _to_num(base.get("rh"))
         voc = _to_num(base.get("voc_index"))
-        rx_ts = _to_epoch(base.get("rx_ts"))
-        if rx_ts is None:
-            rx_ts = _to_epoch(base.get("received_at"))
+        co2_src = base.get("co2_src")
+        co2_cm1107_ppm = _to_num(base.get("co2_cm1107_ppm"))
+        co2_scd41_ppm = _to_num(base.get("co2_scd41_ppm"))
+        scd41_t_c = _to_num(base.get("scd41_t_c"))
+        scd41_rh = _to_num(base.get("scd41_rh"))
+        pmu_present = bool(base.get("pmu_present"))
+        pmu_vbat_v = _to_num(base.get("pmu_vbat_v"))
+        pmu_vbus_v = _to_num(base.get("pmu_vbus_v"))
+        pmu_ichg_ma = _to_num(base.get("pmu_ichg_ma"))
+        pmu_idis_ma = _to_num(base.get("pmu_idis_ma"))
+        rx_ts = _effective_event_ts(base)
+        base_offline_seconds = _node_offline_seconds("base")
+        base_offline = (rx_ts is None) or ((now_epoch - rx_ts) > base_offline_seconds)
 
         base_out = {
             "src": base.get("src") or "base",
@@ -884,10 +967,23 @@ def _build_monitor_state():
             "temperature_f": (t_c * 9.0 / 5.0 + 32.0) if t_c is not None else None,
             "rh": rh,
             "voc_index": voc,
+            "co2_src": co2_src,
+            "co2_cm1107_ppm": co2_cm1107_ppm,
+            "co2_scd41_ppm": co2_scd41_ppm,
+            "scd41_t_c": scd41_t_c,
+            "scd41_rh": scd41_rh,
+            "pmu_present": pmu_present,
+            "pmu_vbat_v": pmu_vbat_v,
+            "pmu_vbus_v": pmu_vbus_v,
+            "pmu_ichg_ma": pmu_ichg_ma,
+            "pmu_idis_ma": pmu_idis_ma,
             "last_rx_ts": rx_ts,
+            "offline": base_offline,
         }
-        if co2 is not None and co2 > CO2_WARN_PPM:
+        if not base_offline and co2 is not None and co2 > CO2_WARN_PPM:
             alerts.append({"severity": "warning", "type": "co2", "node_id": "base", "message": f"High CO₂ at base: {int(round(co2))} ppm"})
+        if not base_offline and pmu_present and pmu_vbat_v is not None and pmu_vbat_v < PMU_LOW_VBAT_V:
+            alerts.append({"severity": "warning", "type": "battery", "node_id": "base", "message": f"Base battery low: {pmu_vbat_v:.2f} V"})
 
     sensors.sort(key=lambda x: str(x.get("name") or ""))
     return {
@@ -899,7 +995,9 @@ def _build_monitor_state():
         "thresholds": {
             "co2_warn_ppm": CO2_WARN_PPM,
             "battery_warn_pct": LOW_BATT_PCT,
-            "offline_minutes": NODE_OFFLINE_MINUTES,
+            "pmu_low_vbat_v": PMU_LOW_VBAT_V,
+            "offline_minutes_default": NODE_OFFLINE_MINUTES,
+            "offline_minutes_by_node": NODE_OFFLINE_MINUTES_BY_NODE,
         },
     }
 
@@ -1060,7 +1158,7 @@ def api_lora():
     rec = {
         "gateway_id": packet.get("gateway_id") or "gw-main",
         "node_id": node_id,
-        "rx_ts": _to_epoch(packet.get("rx_ts")) or _epoch_now(),
+        "rx_ts": _normalize_rx_ts(packet.get("rx_ts")) or _epoch_now(),
         "rssi": _to_num(packet.get("rssi")),
         "snr": _to_num(packet.get("snr")),
         "payload": payload,
@@ -1105,6 +1203,16 @@ def api_base():
         "voc_index": _to_num(body.get("voc_index")),
         "wifi_rssi": _to_num(body.get("wifi_rssi")),
         "uptime_s": _to_num(body.get("uptime_s")),
+        "co2_src": body.get("co2_src"),
+        "co2_cm1107_ppm": _to_num(body.get("co2_cm1107_ppm")),
+        "co2_scd41_ppm": _to_num(body.get("co2_scd41_ppm")),
+        "scd41_t_c": _to_num(body.get("scd41_t_c")),
+        "scd41_rh": _to_num(body.get("scd41_rh")),
+        "pmu_present": bool(body.get("pmu_present")),
+        "pmu_vbat_v": _to_num(body.get("pmu_vbat_v")),
+        "pmu_vbus_v": _to_num(body.get("pmu_vbus_v")),
+        "pmu_ichg_ma": _to_num(body.get("pmu_ichg_ma")),
+        "pmu_idis_ma": _to_num(body.get("pmu_idis_ma")),
         "received_at": datetime.now().isoformat(timespec="seconds"),
     }
 

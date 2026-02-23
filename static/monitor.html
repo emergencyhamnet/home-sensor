@@ -105,11 +105,10 @@
     </div>
 
     <div class="card">
-      <div class="title">Gateway Air Quality</div>
-      <div class="row"><span class="label">CO₂</span><span id="baseCo2">--</span> ppm</div>
-      <div class="row"><span class="label">Temp</span><span id="baseTemp">--</span> °F</div>
-      <div class="row"><span class="label">Humidity</span><span id="baseRh">--</span> %</div>
-      <div class="row"><span class="label">VOC Index</span><span id="baseVoc">--</span></div>
+      <div class="title">Inside Air Quality</div>
+      <div class="row"><span class="label">CO₂</span><span id="insideCo2">--</span> ppm</div>
+      <div class="row"><span class="label">Temp</span><span id="insideTemp">--</span> °F</div>
+      <div class="row"><span class="label">Humidity</span><span id="insideRh">--</span> %</div>
     </div>
 
     <div class="card">
@@ -176,16 +175,27 @@ function renderSensors(sensors) {
   for (i = 0; i < sensors.length; i++) {
     var s = sensors[i] || {};
     var cls = (i % 2 === 1) ? 'sensorCard even' : 'sensorCard';
+      var leakState = Number(s.leak || 0) === 1 ? 'ALARM' : 'OK';
+      var garageState = Number(s.garage_open || 0) === 1 ? 'OPEN' : 'Closed';
+      var sideState = Number(s.side_open || 0) === 1 ? 'OPEN' : 'Closed';
+      var motionState = Number(s.motion || 0) === 1 ? 'ACTIVE' : 'Idle';
+      var silencedState = s.alarm_silenced ? 'Yes' : 'No';
     html += '<div class="' + cls + '">'
       + '<div class="sensorName">' + escHtml(textOrDash(s.name)) + '</div>'
+      + '<div class="row"><span class="label">Status</span>' + escHtml(s.offline ? 'OFFLINE' : 'ONLINE') + '</div>'
       + '<div class="row"><span class="label">Temp</span>' + escHtml(numOrDash(s.temperature_f, 1)) + ' °F</div>'
       + '<div class="row"><span class="label">Humidity</span>' + escHtml(numOrDash(s.humidity, 0)) + ' %</div>'
-      + '<div class="row"><span class="label">Leak</span>' + escHtml(textOrDash(s.leak)) + '</div>'
+      + '<div class="row"><span class="label">CO₂</span>' + escHtml(numOrDash(s.co2_ppm, 0)) + ' ppm</div>'
+      + '<div class="row"><span class="label">Leak</span>' + escHtml(leakState) + '</div>'
+      + '<div class="row"><span class="label">Garage</span>' + escHtml(garageState) + '</div>'
+      + '<div class="row"><span class="label">Side Door</span>' + escHtml(sideState) + '</div>'
+      + '<div class="row"><span class="label">Motion</span>' + escHtml(motionState) + '</div>'
+      + '<div class="row"><span class="label">Silenced</span>' + escHtml(silencedState) + '</div>'
       + '<div class="row"><span class="label">Wet</span>' + escHtml(numOrDash(s.wet, 0)) + '</div>'
+      + '<div class="row"><span class="label">Light</span>' + escHtml(numOrDash(s.light_level, 0)) + '</div>'
       + '<div class="row"><span class="label">Battery</span>' + escHtml(textOrDash(s.battery)) + '</div>'
       + '<div class="row"><span class="label">RSSI</span>' + escHtml(numOrDash(s.rssi, 0)) + '</div>'
       + '<div class="row"><span class="label">SNR</span>' + escHtml(numOrDash(s.snr, 1)) + '</div>'
-      + '<div class="row"><span class="label">Offline</span>' + escHtml(s.offline ? 'YES' : 'No') + '</div>'
       + '</div>';
   }
   grid.innerHTML = html;
@@ -196,21 +206,48 @@ function setText(id, value) {
   if (el) el.textContent = value;
 }
 
-function renderAlerts(alerts) {
+function renderAlerts(state) {
   var el = document.getElementById('alerts');
   if (!el) return;
-  if (!alerts || !alerts.length) {
+  var html = '';
+  var activeAlerts = (state && state.alerts) ? state.alerts : [];
+  var i;
+
+  var shown = 0;
+  for (i = 0; i < activeAlerts.length; i++) {
+    var a = activeAlerts[i] || {};
+    var msg = textOrDash(a.message);
+    html += '<div class="row"><span class="label">ALERT</span>' + escHtml(msg) + '</div>';
+    shown++;
+  }
+
+  if (shown === 0) {
     el.textContent = 'No active alerts.';
     return;
   }
 
-  var html = '';
-  var i;
-  for (i = 0; i < alerts.length; i++) {
-    var a = alerts[i] || {};
-    html += '<div class="row">' + escHtml(textOrDash(a.severity).toUpperCase()) + ': ' + escHtml(textOrDash(a.message)) + '</div>';
-  }
   el.innerHTML = html;
+}
+
+function selectInsideAirSensor(sensors) {
+  if (!sensors || !sensors.length) return null;
+
+  var i;
+  for (i = 0; i < sensors.length; i++) {
+    var s = sensors[i] || {};
+    if (String(s.name || '').toLowerCase() === 'control-node') {
+      return s;
+    }
+  }
+
+  for (i = 0; i < sensors.length; i++) {
+    var candidate = sensors[i] || {};
+    if (candidate.co2_ppm !== null && candidate.co2_ppm !== undefined) {
+      return candidate;
+    }
+  }
+
+  return sensors[0] || null;
 }
 
 function update() {
@@ -235,14 +272,14 @@ function update() {
       if (updated) updated.textContent = ts;
       if (countEl) countEl.textContent = count;
 
-      renderSensors(d && d.sensors ? d.sensors : []);
-      renderAlerts(d && d.alerts ? d.alerts : []);
+      var sensors = d && d.sensors ? d.sensors : [];
+      renderSensors(sensors);
+      renderAlerts(d || {});
 
-      var b = d && d.base ? d.base : null;
-      setText('baseCo2', numOrDash(b ? b.co2_ppm : null, 0));
-      setText('baseTemp', numOrDash(b ? b.temperature_f : null, 1));
-      setText('baseRh', numOrDash(b ? b.rh : null, 0));
-      setText('baseVoc', numOrDash(b ? b.voc_index : null, 0));
+      var inside = selectInsideAirSensor(sensors);
+      setText('insideCo2', numOrDash(inside ? inside.co2_ppm : null, 0));
+      setText('insideTemp', numOrDash(inside ? inside.temperature_f : null, 1));
+      setText('insideRh', numOrDash(inside ? inside.humidity : null, 0));
     };
 
     xhr.open('GET', '/monitor_data?_=' + new Date().getTime(), true);
