@@ -1,6 +1,16 @@
 WS-2000 → Windows 10 (LAN-only) → iPad Dashboard
 ================================================
 
+Tested / Target Hardware
+------------------------
+- Firmware target board in this repo is PlatformIO `esp32dev` (generic ESP32 DevKit profile).
+- Active node setup is two ESP32-class nodes:
+  - Control node (Wi-Fi direct + OLED + buzzer + reset/silence button)
+  - Monitor node (LoRa sensor node)
+- LoRa radio wiring/pin map in this project matches TTGO T-Beam style ESP32 + SX1276 boards,
+  but the build target remains `esp32dev`.
+- If you use a different ESP32 board/model, keep `platformio.ini` and pin mappings aligned with your hardware.
+
 What this is
 ------------
 This package lets your Ambient Weather WS-2000 upload to your Windows 10 home server on your LAN (no internet/cloud),
@@ -200,11 +210,11 @@ This dashboard expects common "Customized" keys such as:
 
 If your JSON at /data uses different keys, tell me what you see and I’ll update the dashboard mapping.
 
-Central Node Wiring (ESP32 + LoRa + I2C + CM1107N)
----------------------------------------------------
-For your planned test setup (gateway + monitor module), wire as follows.
+Node Hardware (current profiles)
+--------------------------------
+For the current live pair (`control_wifi` on COM8 + `monitor_lora_lp` on COM9), use:
 
-Current firmware pin assumptions (gateway / central node):
+Gateway/base node (`gateway`, COM8):
   - LoRa control pins:
     - NSS/SS: GPIO18
     - RST:    GPIO14
@@ -216,25 +226,31 @@ Current firmware pin assumptions (gateway / central node):
     - ESP32 TX2: not used
     - UART baud: 9600
 
-Monitor module pin map (remote node):
+Control node (`control_wifi`, COM8):
+  - I2C bus: SDA=GPIO21, SCL=GPIO22
+  - OLED: I2C `0x3C` (128x64)
+  - Buzzer: GPIO4 (active HIGH)
+  - Alarm reset/silence button: GPIO38 (active LOW)
+  - GPIO38 requires external pull-up to 3.3V (`10k` typical)
+
+Monitor node (`monitor_lora_lp`, COM9):
   - I2C Temp/Humidity bus:
     - SDA: GPIO21
     - SCL: GPIO22
   - Leak detect digital input:
-    - GPIO23 (active LOW, uses INPUT_PULLUP)
+    - GPIO4 (active LOW, uses INPUT_PULLUP)
   - Garage door contact input:
-    - GPIO32 (active LOW, INPUT_PULLUP)
-  - Side door contact input:
-    - GPIO33 (active LOW, INPUT_PULLUP)
-  - Motion detect input:
     - GPIO25 (active LOW, INPUT_PULLUP)
-  - Light sense analog input:
-    - GPIO35 (ADC input, 0-4095 raw)
-  - Buzzer output (to transistor buffer):
-    - GPIO4 (active HIGH)
-  - Alarm silence/reset button:
+  - Side door contact input:
+    - disabled (`-1`)
+  - Motion detect input:
     - GPIO15 (active LOW, INPUT_PULLUP)
-    - wire normally-open button from GPIO15 to GND
+  - Light sense analog input:
+    - disabled (`-1`)
+  - Buzzer output:
+    - disabled (`-1`)
+  - Alarm silence/reset button:
+    - disabled (`-1`)
   - Sensor rail power enable:
     - GPIO13 (active HIGH)
   - Spare UART for future sensors/debug:
@@ -244,16 +260,15 @@ Monitor module pin map (remote node):
     - Addr 0x3C, 128x64 (SSD1306)
 
 Monitor payload fields from these digital inputs:
-  - `leak` (from GPIO23): 1=active, 0=inactive
-  - `garage_open` (from GPIO32): 1=active/open, 0=inactive/closed
-  - `side_open` (from GPIO33): 1=active/open, 0=inactive/closed
-  - `motion` (from GPIO25): 1=motion/active, 0=inactive
-  - `light_level` (from GPIO35 ADC): raw level 0-4095 (higher/lower depends on sensor divider orientation)
+  - `leak` (from GPIO4): 1=active, 0=inactive
+  - `garage_open` (from GPIO25): 1=active/open, 0=inactive/closed
+  - `side_open`: always 0 when disabled
+  - `motion` (from GPIO15): 1=motion/active, 0=inactive
 
-Buzzer behavior:
+Buzzer behavior (control node):
   - Firmware uses GPIO4 to drive a transistor-buffered buzzer output.
   - Leak alert pattern is three beeps and repeats on cooldown while leak remains active.
-  - Press silence button (GPIO15 -> GND) to mute buzzer while leak remains active.
+  - Press alarm reset/silence button (GPIO38 -> GND) to mute buzzer while leak remains active.
   - Silence latch resets automatically after leak clears.
 
 OLED behavior (control node):
@@ -261,10 +276,12 @@ OLED behavior (control node):
   - Normal mode cycles every 2 seconds: `TEMP` -> `HUMID` -> `CO2`.
   - On alarm (currently leak), OLED overrides cycle and shows `ALARM: LEAK`.
   - If silenced, OLED shows `ALARM: LEAK (MUTED)` until leak clears.
+  - Pressing alarm reset/silence clears active buzzer output and updates OLED alarm label to muted.
   - Monitor-node data continues to flow to the server independently.
 
-GPIO15 note:
-  - GPIO15 is a boot-strapping pin; avoid holding the silence button during reset/power-up.
+GPIO notes:
+  - GPIO38 (control reset button) is input-only and needs external pull-up.
+  - GPIO15 (monitor motion) is a boot-strap pin; avoid forcing it low during reset/power-up.
 
 Leak detector module (MH-Sensor series, LM393 comparator)
 ----------------------------------------------------------

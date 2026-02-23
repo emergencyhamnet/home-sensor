@@ -1,6 +1,13 @@
 LoRa Control + Dummy Sensor Firmware
 ===================================
 
+Target Hardware
+---------------
+
+- PlatformIO board target is `esp32dev` (generic ESP32 DevKit profile).
+- Current live deployment uses ESP32 + LoRa nodes with pin mapping compatible with TTGO T-Beam style hardware.
+- This repo uses environment-specific pin defines in `platformio.ini`; if your board differs, adjust pin flags per env.
+
 Current Working Pair (recommended)
 ----------------------------------
 
@@ -17,6 +24,17 @@ This pairing provides:
 - Buzzer on active alarm
 - Control board local sensor payload POST to `/api/lora`
 - LoRa RX from monitor node forwarded to `/api/lora`
+
+OLED + alarm reset behavior (control node)
+-----------------------------------------
+
+- OLED is enabled on control node (`OLED_ENABLED=1`, `OLED_ADDR=0x3C`, `128x64`).
+- Normal display rotates through `TEMP`, `HUMID`, and `CO2`.
+- Active alarms force OLED alarm screen (for example, leak).
+- Alarm reset/silence button is on `GPIO38` (active LOW).
+- `GPIO38` is input-only with no internal pull-up; use external `10k` pull-up to `3.3V`.
+- Pressing the button silences buzzer output while alarm condition remains active; OLED shows muted alarm state.
+- Buzzer uses `GPIO4` (`BUZZER_ACTIVE_HIGH=1`).
 
 Flash commands (explicit env):
 
